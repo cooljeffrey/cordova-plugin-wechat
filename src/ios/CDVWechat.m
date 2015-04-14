@@ -7,6 +7,8 @@
 //
 
 #import "CDVWechat.h"
+#import "CDVFile.h"
+
 
 @implementation CDVWechat
 
@@ -216,7 +218,7 @@
     wxMediaMessage.messageAction = [message objectForKey:@"messageAction"];
     if ([message objectForKey:@"thumb"])
     {
-        [wxMediaMessage setThumbImage:[self getUIImageFromURL:[message objectForKey:@"thumb"]]];
+        [wxMediaMessage setThumbImage:[self getThumbImageFromURL:[message objectForKey:@"thumb"]]];
     }
     
     // media parameters
@@ -271,26 +273,181 @@
 
 - (NSData *)getNSDataFromURL:(NSString *)url
 {
-    NSData *data = nil;
+    __block NSData* data = nil;
 
+    NSURL *uri = [NSURL URLWithString:url];
+    
     if ([url hasPrefix:@"http://"] || [url hasPrefix:@"https://"])
     {
         data = [NSData dataWithContentsOfURL:[NSURL URLWithString:url]];
     }
     else
     {
-        // local file
-        url = [[NSBundle mainBundle] pathForResource:[url stringByDeletingPathExtension] ofType:[url pathExtension]];
-        data = [NSData dataWithContentsOfFile:url];
+        NSString *filepath = @"";
+        if ([[uri scheme] isEqualToString:kCDVFilesystemURLPrefix] && [[uri host] isEqualToString:@"localhost"]) {
+            
+            NSString *path = [uri path];
+            NSString *query = [uri query];
+            if ([path hasPrefix:@"/assets-library/"]) {
+                path = [NSString stringWithFormat:@"assets-library:/%@", [path substringFromIndex: [@"/assets-library" length]]];
+                uri = [NSURL URLWithString:[[path stringByAppendingString:@"?"] stringByAppendingString:query]];
+                data = [self getNSDataFromAssetsLibrary:uri];
+            } else {
+                NSRange slashRange = [path rangeOfString:@"/" options:0 range:NSMakeRange(1, path.length-1)];
+                if (slashRange.location == NSNotFound) {
+                    filepath = @"";
+                }
+                filepath = [path substringFromIndex:slashRange.location];
+                data = [NSData dataWithContentsOfFile:filepath];
+            }
+        } else if ([[uri scheme] isEqualToString:@"assets-library"]) {
+            data = [self getNSDataFromAssetsLibrary:uri];
+        } else {
+            // local file
+            url = [[NSBundle mainBundle] pathForResource:[url stringByDeletingPathExtension] ofType:[url pathExtension]];
+            data = [NSData dataWithContentsOfFile:url];
+        }
+    }
+    return data;
+}
+
+- (NSData*)getNSDataFromAssetsLibrary:(NSURL *) uri
+{
+    __block NSData* data = nil;
+    
+    ALAssetsLibrary *library = [[ALAssetsLibrary alloc] init];
+    
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,0);
+    
+    dispatch_async(queue, ^{
+        [library assetForURL:uri resultBlock:^(ALAsset *asset) {
+            ALAssetRepresentation *rep = [asset defaultRepresentation];
+            long long imageDataSize = [rep size];
+            uint8_t* imageDataBytes = malloc(imageDataSize);
+            [rep getBytes:imageDataBytes fromOffset:0 length:imageDataSize error:nil];
+            
+            data = [NSData dataWithBytesNoCopy:imageDataBytes length:imageDataSize freeWhenDone:YES];
+            dispatch_semaphore_signal(sema);
+        } failureBlock:^(NSError *error) {
+            dispatch_semaphore_signal(sema);
+        }];
+    });
+    
+    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+    return data;
+}
+
+-(UIImage*)shrinkImage:(UIImage*)srcImg :(float)targetSize {
+    float compressionVal = 1.0;
+    float maxVal = targetSize;//MB
+    
+    UIImage *compressedImage = srcImg; //get UIImage from imageView
+    
+    int iterations = 0;
+    int totalIterations = 0;
+    
+    float initialCompressionVal = 0.00000000f;
+    
+    while (((((float)(UIImageJPEGRepresentation(compressedImage, compressionVal).length))) > maxVal) && (totalIterations < 1024)) {
+        
+        compressionVal = (((compressionVal)+((compressionVal)*((float)(((float)maxVal)/((float)(((float)(UIImageJPEGRepresentation(compressedImage, compressionVal).length))))))))/(2));
+        compressionVal *= 0.97;//subtracts 3% of it's current value just incase above algorithm limits at just above MaxVal and while loop becomes infinite.
+        
+        if (initialCompressionVal == 0.00000000f) {
+            initialCompressionVal = compressionVal;
+        }
+        
+        iterations ++;
+        
+        if ((iterations >= 3) || (compressionVal < 0.1)) {
+            iterations = 0;
+            compressionVal = 1.0f;
+            compressedImage = [UIImage imageWithData:UIImageJPEGRepresentation(compressedImage, compressionVal)];
+            
+            float resizeAmount = 1.0f;
+            resizeAmount = (resizeAmount+initialCompressionVal)/(2);//percentage
+            resizeAmount *= 0.97;//3% boost just incase image compression algorithm reaches a limit.
+            resizeAmount = 1/(resizeAmount);//value
+            initialCompressionVal = 0.00000000f;
+            
+            
+            UIView *imageHolder = [[UIView alloc] initWithFrame:CGRectMake(0,0,(int)floorf((float)(compressedImage.size.width/(resizeAmount))), (int)floorf((float)(compressedImage.size.height/(resizeAmount))))];//round down to ensure frame isnt larger than image itself
+            
+            UIImageView *theResizedImage = [[UIImageView alloc] initWithFrame:CGRectMake(0,0,(int)ceilf((float)(compressedImage.size.width/(resizeAmount))), (int)ceilf((float)(compressedImage.size.height/(resizeAmount))))];//round up to ensure image fits
+            theResizedImage.image = compressedImage;
+            
+            
+            [imageHolder addSubview:theResizedImage];
+            
+            
+            UIGraphicsBeginImageContextWithOptions(CGSizeMake(imageHolder.frame.size.width, imageHolder.frame.size.height), YES, 1.0f);
+            CGContextRef resize_context = UIGraphicsGetCurrentContext();
+            [imageHolder.layer renderInContext:resize_context];
+            compressedImage = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+            
+            
+            //after 3 compressions, if we still haven't shrunk down to maxVal size, apply the maximum compression we can, then resize the image (90%?), then re-start the process, this time compressing the compressed version of the image we were checking.
+        }
+        
+        totalIterations ++;
+        
     }
     
-    return data;
+    if (totalIterations >= 1024) {
+        NSLog(@"Image was too big, gave up on trying to re-size");//too many iterations failsafe. Gave up on trying to resize.
+        return nil;
+    } else {
+        NSData *imageData = UIImageJPEGRepresentation(compressedImage, compressionVal);
+        return [UIImage imageWithData:imageData];//save new image to UIImageView.
+    }
 }
 
 - (UIImage *)getUIImageFromURL:(NSString *)url
 {
     NSData *data = [self getNSDataFromURL:url];
     return [UIImage imageWithData:data];
+}
+
+- (UIImage *)getThumbImageFromURL:(NSString *)url
+{
+    __block NSData* data = nil;
+    
+    NSURL *uri = [NSURL URLWithString:url];
+    
+    if ([url hasPrefix:@"http://"] || [url hasPrefix:@"https://"])
+    {
+        data = [NSData dataWithContentsOfURL:[NSURL URLWithString:url]];
+    }
+    else
+    {
+        NSString *filepath = @"";
+        if ([[uri scheme] isEqualToString:kCDVFilesystemURLPrefix] && [[uri host] isEqualToString:@"localhost"]) {
+            
+            NSString *path = [uri path];
+            NSString *query = [uri query];
+            if ([path hasPrefix:@"/assets-library/"]) {
+                path = [NSString stringWithFormat:@"assets-library:/%@", [path substringFromIndex: [@"/assets-library" length]]];
+                uri = [NSURL URLWithString:[[path stringByAppendingString:@"?"] stringByAppendingString:query]];
+                data = [self getNSDataFromAssetsLibrary:uri];
+            } else {
+                NSRange slashRange = [path rangeOfString:@"/" options:0 range:NSMakeRange(1, path.length-1)];
+                if (slashRange.location == NSNotFound) {
+                    filepath = @"";
+                }
+                filepath = [path substringFromIndex:slashRange.location];
+                data = [NSData dataWithContentsOfFile:filepath];
+            }
+        } else if ([[uri scheme] isEqualToString:@"assets-library"]) {
+            data = [self getNSDataFromAssetsLibrary:uri];
+        } else {
+            // local file
+            url = [[NSBundle mainBundle] pathForResource:[url stringByDeletingPathExtension] ofType:[url pathExtension]];
+            data = [NSData dataWithContentsOfFile:url];
+        }
+    }
+    return [self shrinkImage:[UIImage imageWithData:data] :31900];
 }
 
 - (void)successWithCallbackID:(NSString *)callbackID
