@@ -340,7 +340,7 @@
 
 -(UIImage*)shrinkImage:(UIImage*)srcImg :(float)targetSize {
     float compressionVal = 1.0;
-    float maxVal = targetSize;//MB
+    float maxVal = targetSize;
     
     UIImage *compressedImage = srcImg; //get UIImage from imageView
     
@@ -447,7 +447,7 @@
             data = [NSData dataWithContentsOfFile:url];
         }
     }
-    return [self shrinkImage:[UIImage imageWithData:data] :31900];
+    return [self shrinkImage:[UIImage imageWithData:data] :25000];
 }
 
 - (void)successWithCallbackID:(NSString *)callbackID
