@@ -6,16 +6,20 @@ import java.net.URL;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
+import org.apache.cordova.file.FileUtils;
+import org.apache.cordova.file.LocalFilesystemURL;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.util.Log;
 
 import com.tencent.mm.sdk.modelmsg.SendAuth;
 import com.tencent.mm.sdk.modelmsg.SendMessageToWX;
+import com.tencent.mm.sdk.modelmsg.WXImageObject;
 import com.tencent.mm.sdk.modelmsg.WXMediaMessage;
 import com.tencent.mm.sdk.modelmsg.WXTextObject;
 import com.tencent.mm.sdk.modelmsg.WXWebpageObject;
@@ -222,10 +226,10 @@ public class Wechat extends CordovaPlugin {
 			URL thumbnailUrl = null;
 			Bitmap thumbnail = null;
 
-			try {
-				thumbnailUrl = new URL(message.getString(KEY_ARG_MESSAGE_THUMB));
-				thumbnail = BitmapFactory.decodeStream(thumbnailUrl
-						.openConnection().getInputStream());
+            try {
+                thumbnailUrl = new URL(message.getString(KEY_ARG_MESSAGE_THUMB));
+				thumbnail = BitmapFactory.decodeStream(thumbnailUrl.openConnection().getInputStream());
+                thumbnail = Bitmap.createScaledBitmap(thumbnail, 12, 12, false);
 
 			} catch (Exception e) {
 				Log.e("Wechat", "Thumb URL parsing error", e);
@@ -251,6 +255,8 @@ public class Wechat extends CordovaPlugin {
 				break;
 
 			case TYPE_WX_SHARING_IMAGE:
+                mediaObject = new WXImageObject();
+                ((WXImageObject)mediaObject).setImagePath(media.getString("image"));
 				break;
 
 			case TYPE_WX_SHARING_MUSIC:
